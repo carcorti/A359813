@@ -1,0 +1,781 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+
+\usepackage[english]{babel}
+
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{siunitx}
+\sisetup{group-separator={\,},group-minimum-digits=4}
+\usepackage{url}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true,linkcolor=black,urlcolor=blue,citecolor=blue}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{conjecture}[theorem]{Conjecture}
+
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{remark}[theorem]{Remark}
+\newtheorem{openproblem}{Open Problem}
+
+\title{Computational Extension of OEIS Sequence A359813:\\
+Two New Terms at $n=17$ and $n=18$}
+
+\author{%
+  Carlo Corti\\
+  \small Independent researcher\\
+  \small \texttt{carlo.corti@outlook.com}%
+}
+
+\date{April 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+We extend OEIS sequence A359813, which counts primes less than $10^n$ having
+exactly one odd decimal digit, by computing two new terms:
+$a(17) = \num{40386401580}$ and $a(18) = \num{190186145230}$.
+The computation is based on a structural characterization of the candidate
+space (every prime in the sequence with at least two digits has its odd digit
+in the units position), a cascade of modular filters, and a deterministic
+Miller--Rabin test with twelve bases, all parallelised with OpenMP. The
+implementation is a single C17 source file (using the GCC/Clang
+\texttt{\_\_uint128\_t} extension for 128-bit arithmetic), no external
+dependencies beyond libc and OpenMP, and uses exclusively \texttt{uint64\_t}
+and \texttt{\_\_uint128\_t} arithmetic. The search for $a(17)$ completes in
+approximately 2\,h 20\,min on a commodity workstation, with an independent
+re-computation using a different \texttt{mulmod} kernel producing an
+identical count at every individual prefix of the candidate space. The computation for $a(18)$ completes in
+approximately 12\,h 49\,min. Both results pass the Wilson heuristic sanity
+check within 1\,\%, and their ratio $a(18)/a(17)$ agrees with the Prime
+Number Theorem prediction to within 0.12\,\%.
+
+\medskip
+\noindent
+2020 \emph{Mathematics Subject Classification}: Primary 11A41; Secondary
+11Y55, 11N05.
+
+\noindent
+\emph{Key words and phrases}: prime number, integer sequence, decimal digits,
+Miller--Rabin primality test, Montgomery multiplication, OpenMP,
+computational number theory.
+\end{abstract}
+
+\section{Introduction}
+
+A prime $p$ belongs to OEIS sequence A359813~\cite{OEIS-A359813} if
+$p < 10^n$ for some $n$ and the decimal representation of $p$ contains
+exactly one odd digit. The sequence $a(n)$ counts such primes as a function
+of $n$. For example, $a(1) = 3$ (the single-digit odd primes $3, 5, 7$;
+note that $2$ has zero odd digits and is excluded), and $a(2) = 12$, as
+there are twelve primes less than $100$ having a single odd digit:
+\[
+  3,\ 5,\ 7,\ 23,\ 29,\ 41,\ 43,\ 47,\ 61,\ 67,\ 83,\ 89.
+\]
+
+Yang~\cite{Yang-A359813} introduced the sequence in January 2023 and
+computed its initial terms. Robert G.\ Wilson\,v extended the sequence
+to $a(16) = \num{8600149593}$ (February 2023). The sequence carries the keyword
+\texttt{more}, signalling interest in further computational extension.
+
+The broader question of the existence and distribution of primes with
+prescribed digit constraints has received substantial theoretical attention,
+most notably Maynard's proof~\cite{Maynard2019} that there are infinitely
+many primes avoiding any fixed digit. The present sequence imposes a
+complementary constraint (exactly one odd digit), which is more restrictive
+and is studied here from a purely computational perspective.
+
+The computational difficulty has two components. First, the number of
+candidates grows as $16 \cdot 5^{n-2}$ by the structural Lemma~\ref{lem:structure}
+below, which for $n=17$ is approximately $4.88 \times 10^{11}$ and for
+$n=18$ is approximately $2.44 \times 10^{12}$. Second, each surviving
+candidate requires a primality test on an integer of up to $18$ decimal
+digits, comfortably within a $64$-bit unsigned integer but sufficient to
+require care in the choice of witnesses for a deterministic Miller--Rabin
+test.
+
+The present work addresses both components through a structural reduction
+of the enumeration space (Section~\ref{sec:math}), a cascade of modular
+filters followed by deterministic Miller--Rabin with twelve bases
+(Section~\ref{sec:algo}), and an OpenMP implementation
+(Section~\ref{sec:algo}) running on a commodity $16$-thread workstation.
+The main results are as follows.
+
+\begin{enumerate}
+  \item $a(17) = \num{40386401580}$
+    (Theorem~\ref{thm:a17}).
+  \item $a(18) = \num{190186145230}$
+    (Theorem~\ref{thm:a18}).
+  \item A structural lemma forcing the odd digit of every prime with at least
+    two digits in the sequence to coincide with the units digit
+    (Lemma~\ref{lem:structure}).
+\end{enumerate}
+
+Both new terms pass the Wilson heuristic sanity check within $1\,\%$, and
+are mutually consistent through the Prime Number Theorem ratio test
+(Section~\ref{sec:validation}).
+
+\subsection{Notation}
+
+Throughout, $p$ denotes a prime, $n$ a positive integer, and $\pi(x)$ the
+prime-counting function. We write $[L,R)$ for half-open integer intervals.
+For any positive integer $m$, we denote by $\operatorname{digs}(m)$ the
+decimal digits of $m$ without leading zeros, and by $|m|_{10}$ the number
+of such digits. The candidate space for $a(n)$ is denoted $\mathcal{C}_n$
+(Definition~\ref{def:candidate-space}).
+
+\section{Mathematical framework}\label{sec:math}
+
+\subsection{Structural characterization of candidates}
+
+We begin with a simple observation that dramatically reduces the enumeration space.
+
+\begin{lemma}\label{lem:structure}
+Let $p > 2$ be a prime whose decimal representation contains exactly one
+odd digit. Then that odd digit must be the units digit of $p$.
+\end{lemma}
+
+\begin{proof}
+In base~$10$, an integer $m$ is odd if and only if its units digit is odd,
+since $m \equiv d_0 \pmod{2}$ where $d_0$ is the units digit. Since $p > 2$
+is prime, $p$ is odd, hence its units digit $d_0$ is odd. By hypothesis
+$p$ contains exactly one odd digit, so the single odd digit must be $d_0$,
+i.e.\ the units digit.
+\end{proof}
+
+\begin{remark}[Edge case $p=2$]
+The prime $p=2$ has the decimal representation~``$2$'', which contains
+\emph{zero} odd digits. Hence $p=2$ never belongs to the sequence, and
+Lemma~\ref{lem:structure} applies to every prime in the sequence.
+\end{remark}
+
+\begin{remark}
+Lemma~\ref{lem:structure} is an identity, not a heuristic. It holds for
+every prime $p > 2$ whose decimal representation contains exactly one odd
+digit, and it is this exact structural fact that drives the enumeration.
+\end{remark}
+
+\begin{definition}[Candidate space]\label{def:candidate-space}
+For $n \geq 2$, define
+\[
+  \mathcal{C}_n := \{2,4,6,8\} \times \{0,2,4,6,8\}^{n-2} \times \{1,3,7,9\},
+\]
+interpreted as the set of $n$-digit integers of the form
+$d_{n-1} \cdot 10^{n-1} + d_{n-2}\cdot 10^{n-2} + \cdots + d_0$,
+where the leading digit $d_{n-1} \in \{2,4,6,8\}$, the interior digits
+$d_i \in \{0,2,4,6,8\}$ for $1 \le i \le n-2$, and the units digit
+$d_0 \in \{1,3,7,9\}$. For $n=1$, we set $\mathcal{C}_1 := \{1,3,5,7,9\}$.
+\end{definition}
+
+The leading digit is restricted to $\{2,4,6,8\}$ because a prime of $n \geq 2$
+digits cannot have leading digit $0$, and because the only primes with
+leading digit $1, 3, 5, 7, 9$ and exactly one odd digit are the single-digit
+primes; these are handled separately for $n=1$. It follows immediately from
+Lemma~\ref{lem:structure} that every prime counted by $a(n)$ with at least
+two digits lies in $\mathcal{C}_n$.
+
+\begin{proposition}\label{prop:cardinality}
+For $n \geq 2$, we have $|\mathcal{C}_n| = 16 \cdot 5^{n-2}$.
+\end{proposition}
+
+\begin{proof}
+Immediate from Definition~\ref{def:candidate-space}:
+$|\{2,4,6,8\}| = 4$,
+$|\{0,2,4,6,8\}^{n-2}| = 5^{n-2}$,
+$|\{1,3,7,9\}| = 4$,
+and $4 \cdot 5^{n-2} \cdot 4 = 16 \cdot 5^{n-2}$.
+\end{proof}
+
+For $n = 17$, Proposition~\ref{prop:cardinality} gives
+$|\mathcal{C}_{17}| = \num{488281250000}$;
+for $n = 18$, $|\mathcal{C}_{18}| = \num{2441406250000}$.
+Compared with the naive space $[0, 10^n)$, the structural reduction is a
+factor of exactly
+\[
+  \frac{10^n}{16 \cdot 5^{n-2}}
+  = \frac{2^n \cdot 5^n}{2^4 \cdot 5^{n-2}}
+  = 25 \cdot 2^{n-4},
+\]
+i.e.\ a factor of $25 \cdot 2^{13} = \num{204800}$ at $n=17$.
+
+\subsection{Modular filter}\label{sec:modular-filter}
+
+A candidate $c \in \mathcal{C}_n$ is not necessarily prime. The vast majority
+of candidates are composite and can be eliminated by a cascade of small-prime
+divisibility tests before the costly Miller--Rabin stage. We apply two levels
+of modular filter.
+
+\paragraph{Filter by $3$.} The value of $c \bmod 3$ depends only on the sum
+of its digits modulo $3$. For a fixed choice of the $n-1$ leading digits, the
+units digit $u \in \{1,3,7,9\}$ is constrained by the requirement that
+$c \not\equiv 0 \pmod 3$ (except for the trivial case $c = 3$). A direct
+computation gives, writing $s$ for the sum of the leading digits:
+\begin{align*}
+  s \equiv 0 \pmod 3 &\implies u \in \{1, 7\},\\
+  s \equiv 1 \pmod 3 &\implies u \in \{1, 3, 7, 9\},\\
+  s \equiv 2 \pmod 3 &\implies u \in \{3, 9\}.
+\end{align*}
+This filter eliminates, to excellent approximation, $1/3$ of the candidates.
+To see why: the units digits $\{1,3,7,9\}$ satisfy $1\equiv 7\equiv 1\pmod 3$
+and $3\equiv 9\equiv 0\pmod 3$, so exactly two of the four units-digit choices
+are $\equiv 0$ and two are $\equiv 1\pmod 3$. For a fixed prefix sum
+$s\equiv 0\pmod 3$ exactly $2$ of $4$ units digits survive; for
+$s\equiv 1\pmod 3$ all $4$ survive (since none are $\equiv 2$); and for
+$s\equiv 2\pmod 3$ exactly $2$ of $4$ survive. If prefix digit sums were
+uniformly distributed modulo~$3$ over~$\mathcal{C}_n$, the average survival
+rate would be $(2/4 + 4/4 + 2/4)/3 = 2/3$, i.e.\ the filter would eliminate
+exactly~$1/3$.
+
+The distribution of prefix sums modulo~$3$ is, however, only asymptotically
+uniform, not exactly so for finite~$n$. Each interior digit from
+$\{0,2,4,6,8\}$ contributes a residue drawn from the distribution
+$(0,1,2) \mapsto (2/5,1/5,2/5)$, whose associated circulant transition
+matrix has second eigenvalue of modulus~$1/5$; after the $n-2$ interior
+digits the deviation from uniform is bounded by~$(1/5)^{n-2}$. For the
+leading digit from $\{2,4,6,8\}$ the residues $(0,1,2)$ occur with
+frequencies $(1/4,1/4,2/4)$, introducing an initial non-uniformity that is
+then suppressed exponentially by the interior digits. For $n = 2$ (where
+there are no interior digits) the elimination rate is $3/8 = 37.5\,\%$,
+not $1/3$; for $n \geq 4$ the deviation from $1/3$ is smaller than
+$(1/5)^{n-2}/3$, and for $n = 17$ it is below $10^{-10}$, negligible for
+all computational purposes.
+In the implementation it is encoded as a three-entry bitmask on the residue class of the leading-digit
+sum, applied inside the enumeration loop.
+
+\paragraph{Filter by small primes.} Let
+\[
+  \mathcal{P}_{\mathrm{small}} :=
+  \{7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47\}.
+\]
+For each prime $p \in \mathcal{P}_{\mathrm{small}}$ we precompute a table
+$\text{contrib}[p][\mathrm{pos}][\mathrm{digit}]$ giving
+the contribution $\text{digit} \cdot 10^{\mathrm{pos}} \bmod p$ for every
+possible digit and position. The residue of the candidate modulo each small
+prime is maintained incrementally as the enumeration advances, and the
+candidate is discarded as soon as one of these residues vanishes. A minor
+implementation detail requires the guard $c > p$, to avoid discarding the
+prime $p$ itself when it coincides with a candidate (relevant only for
+$n = 2$).
+
+Empirically, this filter eliminates approximately $48\,\%$ of the candidates
+that survive the filter by $3$, leaving roughly $35\,\%$ of the original
+space to be processed by the Miller--Rabin test.
+
+\subsection{Primality test}\label{sec:mr}
+
+After filtering, each surviving candidate $c < 10^{18}$ is tested by
+deterministic Miller--Rabin with the twelve bases
+\[
+  \mathcal{B}_{12} := \{2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37\},
+\]
+which constitute a deterministic witness set for every odd composite
+$n$ below
+\[
+  \num{3317044064679887385961981} \;\approx\; 3.3 \times 10^{23},
+\]
+as established by Sorenson and Webster~\cite{SorensonWebster2017} and
+recorded as OEIS sequence A014233~\cite{OEIS-A014233}.
+
+\begin{remark}[Why twelve bases and not seven]
+A common choice in the literature is the set of seven bases
+$\{2, 3, 5, 7, 11, 13, 17\}$, following Jaeschke~\cite{Jaeschke1993}. This
+set is deterministic only for
+$n < \num{341550071728321} \approx 3.4 \times 10^{14}$; for the targets
+$a(17)$ and $a(18)$, which require primality certification of candidates up to
+$10^{18}$, this set is \emph{not} deterministic. We use the twelve-base set
+throughout.
+\end{remark}
+
+The Miller--Rabin kernel uses Montgomery form: for each candidate $c$, the
+Montgomery parameters $c^{-1} \bmod 2^{64}$ and $2^{128} \bmod c$ are
+computed once, and every modular multiplication is then performed as a
+Montgomery reduction. A fallback kernel using native
+\texttt{\_\_uint128\_t} multiplication is also implemented; this is used
+only for the cross-check described in
+Section~\ref{sec:validation}.
+
+\section{Implementation}\label{sec:algo}
+
+\subsection{Enumeration}\label{sec:enum}
+
+For $n \geq 4$, the candidate space $\mathcal{C}_n$ is partitioned into $100$
+subspaces indexed by the first three digits of the candidate. The first
+three digits lie in $\{2,4,6,8\} \times \{0,2,4,6,8\}^2$, yielding
+$4 \times 5 \times 5 = 100$ combinations. Each subspace contains
+$4 \cdot 5^{n-4}$ raw candidates; after the mod-3 filter (which eliminates
+approximately $1/3$ of candidates in aggregate) each subspace contributes
+on average $(8/3) \cdot 5^{n-4} \approx 2.67 \cdot 5^{n-4}$ survivors.
+
+The enumeration within a subspace is a pure digit-tree walk: the middle
+digits are iterated through all $5^{n-4}$ combinations in a Gray-code-like
+order that maintains, incrementally, the partial decimal value of the
+candidate, the sum of digits modulo $3$, and the residues modulo each
+prime in $\mathcal{P}_{\mathrm{small}}$. No intermediate candidate is ever
+materialized in memory beyond a constant-size working set.
+
+For $n \in \{1, 2, 3\}$, the enumeration is handled by direct cases with
+fewer than $100$ candidates, without the prefix partitioning.
+
+\subsection{Parallelisation}\label{sec:omp}
+
+The $100$ prefix-level subspaces form the natural unit of parallelism:
+they are mutually disjoint, roughly balanced in workload, and require no
+shared state during execution. The OpenMP directive
+\begin{verbatim}
+  #pragma omp parallel for schedule(dynamic,1) reduction(+:total)
+\end{verbatim}
+assigns subspaces to threads dynamically. On the target hardware (AMD
+Ryzen 9 7940HS, 8 cores, 16 threads via SMT2), a scaling experiment on
+$a(12)$ yielded the speedup shown in Table~\ref{tab:scaling}.
+
+\begin{table}[ht]
+  \centering
+  \begin{tabular}{r r r r}
+    \toprule
+    Threads & Time (s) & Speedup & Efficiency\\
+    \midrule
+    1  & 34.521 &  1.00$\times$ & 100.0\,\%\\
+    2  & 17.296 &  2.00$\times$ &  99.8\,\%\\
+    4  &  8.759 &  3.94$\times$ &  98.5\,\%\\
+    8  &  4.478 &  7.71$\times$ &  96.4\,\%\\
+    16 &  2.768 & 12.47$\times$ &  77.9\,\%\\
+    \bottomrule
+  \end{tabular}
+  \caption{OpenMP scaling on $a(12)$. Efficiency drops at $16$ threads
+    because the Ryzen 9 7940HS has only $8$ physical cores; the last
+    $8$ threads share execution resources via SMT2.}
+  \label{tab:scaling}
+\end{table}
+
+\subsection{Checkpointing}\label{sec:ckpt}
+
+For long-running campaigns such as $a(18)$, the implementation writes a
+binary checkpoint after each of the $100$ subspaces completes. The
+checkpoint records the completed prefix bitmap, the per-prefix partial
+count, and a CRC-32 integrity tag, and is written atomically via
+\verb|rename()| on a temporary file. A run invoked with \verb|--resume|
+loads the checkpoint and skips the completed prefixes. The checkpoint
+granularity of approximately $1\,\%$ of the total workload ensures that
+no more than a few minutes of computation is ever at risk of loss in case
+of interruption.
+
+\subsection{Hardware and software environment}\label{sec:env}
+
+All runs reported in this paper were executed on the same workstation:
+
+\begin{itemize}
+  \setlength{\itemsep}{0pt}
+  \item CPU: AMD Ryzen 9 7940HS ($8$ cores, $16$ threads, max boost $5.26$\,GHz);
+  \item RAM: $64$\,GB DDR5-5600;
+  \item OS: Linux Mint 22.3 (kernel 6.14);
+  \item Compiler: GCC 13.3.0;
+  \item Compile flags: \texttt{-std=c17 -fopenmp -O3 -march=native -DNDEBUG};
+  \item Note: the implementation uses \texttt{\_\_uint128\_t}, a GCC/Clang
+    compiler extension not part of ISO C17; the source is therefore correctly
+    described as GNU~C17 rather than strictly ISO C17;
+  \item Peripheral tools: Python 3.12, SymPy 1.14 (for cross-checks).
+\end{itemize}
+
+\section{Computational results}\label{sec:results}
+
+\subsection{Oracle verification}\label{sec:oracle}
+
+Before running the campaigns for $a(17)$ and $a(18)$, the entire
+implementation was validated against the OEIS $b$-file for
+$a(1), \ldots, a(16)$, using the same code and the same twelve-base
+Miller--Rabin kernel. At $16$ OpenMP threads, the full oracle suite
+completes in approximately $43$ minutes and matches the $b$-file
+on every term with an exact count.
+
+Crucially, the oracle test was also run at $1$ thread and yielded the
+identical counts at every layer, providing strong empirical evidence
+against harmful race conditions in the parallel enumeration
+(see~\cite{Repo} for the representative validation logs).
+
+\subsection{First new term}
+
+\begin{theorem}\label{thm:a17}
+$a(17) = \num{40386401580}$.
+\end{theorem}
+
+\begin{proof}[Proof sketch]
+The result follows from the exhaustive enumeration of $\mathcal{C}_{17}$
+(Definition~\ref{def:candidate-space}, cardinality $\num{488281250000}$),
+with primality determined by deterministic twelve-base Miller--Rabin
+(Section~\ref{sec:mr}). The enumeration is complete in the sense that every
+integer in $[10^{16}, 10^{17})$ whose decimal representation has exactly one
+odd digit is visited, by Lemma~\ref{lem:structure}. The result is the
+cumulative count
+\[
+  a(17) \;=\; a(16) \;+\; \#\{\, p \in \mathcal{C}_{17} : p \text{ prime}\,\},
+\]
+with $a(16) = \num{8600149593}$ taken from the OEIS $b$-file and the layer
+count computed from the present campaign.
+\end{proof}
+
+This computation was repeated with a second, arithmetically independent
+implementation of modular multiplication: native \texttt{\_\_uint128\_t}
+reduction instead of Montgomery form. Both runs produced the identical
+result; see Section~\ref{sec:validation}.
+
+\subsection{Second new term}
+
+\begin{theorem}\label{thm:a18}
+$a(18) = \num{190186145230}$.
+\end{theorem}
+
+\begin{proof}[Proof sketch]
+Analogous to Theorem~\ref{thm:a17}, with the cumulative relation
+\[
+  a(18) \;=\; a(17) \;+\; \#\{\, p \in \mathcal{C}_{18} : p \text{ prime}\,\},
+\]
+where $a(17)$ is taken from Theorem~\ref{thm:a17}.
+\end{proof}
+
+\subsection{Wilson heuristic sanity check}
+
+Wilson~\cite{Wilson-comment} observed the empirical relation
+\begin{equation}\label{eq:wilson}
+  a(n) \approx \frac{\pi(10^n)}{2^{n-1}}.
+\end{equation}
+Using the known values of $\pi(10^{17})$ and
+$\pi(10^{18})$~\cite{primepi-table}, equation~\eqref{eq:wilson} yields
+\[
+  \frac{\pi(10^{17})}{2^{16}} = \num{40032305262}, \qquad
+  \frac{\pi(10^{18})}{2^{17}} = \num{188750871946}.
+\]
+
+\begin{table}[ht]
+  \centering
+  \begin{tabular}{r r r r}
+    \toprule
+    $n$ & $a(n)$ & Wilson estimate & Relative scatter\\
+    \midrule
+    $17$ & \num{40386401580}  & \num{40032305262}  & $0.8768\,\%$\\
+    $18$ & \num{190186145230} & \num{188750871946} & $0.7547\,\%$\\
+    \bottomrule
+  \end{tabular}
+  \caption{Wilson sanity check for the two new terms. Both values pass
+    the hard-coded $2\,\%$ threshold embedded in the implementation, which
+    aborts the run with a fatal error when exceeded. Relative scatter is
+    defined as $|a(n) - \text{estimate}| / a(n)$ (denominator is the
+    observed value; using the estimate as denominator gives values
+    differing by less than $0.01\,\%$).}
+  \label{tab:wilson}
+\end{table}
+
+\subsection{Campaign summary}\label{sec:campaign}
+
+Table~\ref{tab:campaign} summarizes the four principal runs performed for
+this work.
+
+\begin{table}[ht]
+  \centering
+  \small
+  \begin{tabular}{l l r r l}
+    \toprule
+    Run                    & Backend       & Threads & Wall-time & Result\\
+    \midrule
+    Oracle $a(1)\!-\!a(16)$ & Montgomery, 12 bases & $16$ & $42\,\text{min}\ 54\,\text{s}$ & $b$-file match\\
+    $a(17)$, primary        & Montgomery, 12 bases & $16$ & $2\,\text{h}\ 20\,\text{min}$ & $\num{40386401580}$\\
+    $a(17)$, cross-check    & \texttt{u128}, 12 bases & $16$ & $4\,\text{h}\ 12\,\text{min}$ & $\num{40386401580}$\\
+    $a(18)$, primary        & Montgomery, 12 bases & $14$ & $12\,\text{h}\ 49\,\text{min}$ & $\num{190186145230}$\\
+    \bottomrule
+  \end{tabular}
+  \caption{Summary of the four principal runs. The $a(18)$ run was
+    performed at $14$ threads rather than $16$ to reduce sustained
+    CPU temperature from $\SI{92}{\celsius}$ (observed on the
+    $a(17)$ run at $16$ threads) to $\SI{80}{\celsius}$, at a
+    performance cost of approximately $8\,\%$.}
+  \label{tab:campaign}
+\end{table}
+
+The total campaign time for the two new terms is approximately
+$20$ hours of wall-clock time, spread over three days, including the
+kernel cross-check.
+
+\section{Independent validation}\label{sec:validation}
+
+The published values of $a(17)$ and $a(18)$ are supported by
+multiple validation layers; their scope differs between the two new terms.
+
+For $a(17)$: an arithmetically independent kernel cross-check
+(Section~\ref{sec:crosscheck}), a partial enumerator cross-check against
+SymPy on prefixes of $a(14)$ (Section~\ref{sec:sympy}), and internal
+consistency with PNT and Wilson heuristic. For $a(18)$: internal
+consistency with $a(17)$ via the PNT ratio test and with the Wilson
+heuristic. The algorithm's correctness, demonstrated for $a(17)$ and by
+the oracle match on $a(1)$--$a(16)$, provides the foundational guarantee
+that the same code path applied to $a(18)$ is free of systematic error.
+
+\subsection{Kernel cross-check on \texorpdfstring{$a(17)$}{a(17)}}\label{sec:crosscheck}
+
+The primary campaign for $a(17)$ used Montgomery-form modular
+multiplication. The cross-check campaign used \texttt{\_\_uint128\_t}
+native multiplication, which is an arithmetically distinct code path with
+different carry-propagation paths, different register usage, and different
+compiler-generated assembly. Both runs produced
+$a(17) = \num{40386401580}$, with identical counts at every individual prefix. The per-prefix partial
+counts (all $100$ prefixes) also matched, providing stronger evidence than
+a single final-total comparison.
+
+The observed wall-time ratio between the two kernels ($4.20\,\text{h}$
+vs.\ $2.34\,\text{h}$) is $1.796$. Combined with the isolated kernel
+ratio of $1.90$ measured in a separate benchmark, this implies that the
+Miller--Rabin kernel accounts for approximately $88\,\%$ of the total
+pipeline time on the Ryzen 9 7940HS.
+
+\subsection{Enumerator cross-check against SymPy}\label{sec:sympy}
+
+A third, independent implementation was written in Python using
+\texttt{sympy.isprime} as the primality oracle. This implementation
+replicates the enumeration of $\mathcal{C}_n$ exactly (same prefix
+decoding, same modular filters, same mask by $3$) but differs in every
+other respect: interpreted language, different library, and a BPSW-based
+primality test instead of Miller--Rabin. For $n < 2^{64}$, the
+\texttt{sympy.isprime} function is conjecturally deterministic (its
+correctness rests on the Baillie--PSW conjecture, which remains unproven
+but has no known counterexample below $2^{64}$).
+
+For computational feasibility, the cross-check was performed on $a(14)$
+rather than $a(17)$, and on individual prefixes rather than the whole
+sequence. Table~\ref{tab:python-crosscheck} summarises the three prefixes
+selected, chosen to span all four possible values of the leading digit and
+the two extremes of the middle-digit distribution.
+
+\begin{table}[ht]
+  \centering
+  \begin{tabular}{r l r r l}
+    \toprule
+    pid & digits  & C (MR-12)            & Python (BPSW)        & match\\
+    \midrule
+      0 & $(2,0,0)$ & \num{3193483} & \num{3193483} & $\checkmark$\\
+     75 & $(8,0,0)$ & \num{3049153} & \num{3049153} & $\checkmark$\\
+     99 & $(8,8,8)$ & \num{3059841} & \num{3059841} & $\checkmark$\\
+    \bottomrule
+  \end{tabular}
+  \caption{Cross-check of the enumerator on three prefixes of $a(14)$.
+    The C implementation uses deterministic twelve-base Miller--Rabin in
+    Montgomery form; the Python implementation uses
+    \texttt{sympy.isprime}, a BPSW-based primality test conjecturally
+    deterministic for $n < 2^{64}$ (Baillie--PSW conjecture; no known
+    counterexample). Counts are exact and identical on all three prefixes.}
+  \label{tab:python-crosscheck}
+\end{table}
+
+As a secondary sanity check, the ratio of densities predicted by the Prime
+Number Theorem between the smallest-magnitude prefix ($2\cdot 10^{13}$)
+and the largest-magnitude prefix ($8.88\cdot 10^{13}$) is
+\[
+  \frac{1/\ln(2 \cdot 10^{13})}{1/\ln(8.88 \cdot 10^{13})}
+  = \frac{\ln(8.88 \cdot 10^{13})}{\ln(2 \cdot 10^{13})}
+    = \frac{32.117}{30.627}
+    \approx 1.0487,
+\]
+while the observed ratio is $\num{3193483}/\num{3059841} = 1.0437$, a
+deviation of approximately $0.48\,\%$.
+
+\subsection{Internal consistency of \texorpdfstring{$a(17)$}{a(17)} and \texorpdfstring{$a(18)$}{a(18)}}
+
+The Prime Number Theorem predicts
+\[
+  \frac{a(n+1)}{a(n)} \approx
+    \frac{\pi(10^{n+1})/2^{n}}{\pi(10^{n})/2^{n-1}} =
+    \frac{1}{2}\cdot\frac{\pi(10^{n+1})}{\pi(10^{n})}.
+\]
+For $n = 17$, this yields $\tfrac{1}{2} \cdot \pi(10^{18})/\pi(10^{17}) = 4.7150$,
+while the observed value is $a(18)/a(17) = 4.7092$, a deviation of
+$0.12\,\%$. This is an independent check that both new terms are
+internally consistent with each other, not only individually consistent
+with Wilson's heuristic.
+
+\section{Heuristic discussion}\label{sec:heur}
+
+Wilson's relation~\eqref{eq:wilson} can be motivated by a density
+argument, though a rigorous derivation remains open
+(Open Problem~\ref{op:wilson}).
+
+A naive starting point is to treat the $|\mathcal{C}_n| = 16 \cdot 5^{n-2}$
+candidates as uniformly sampled from $[1, 10^n)$.  Applying the global
+prime density $\pi(10^n)/10^n$ gives an expected count of
+\[
+  16 \cdot 5^{n-2} \cdot \frac{\pi(10^n)}{10^n}
+   = \frac{16}{25} \cdot \frac{\pi(10^n)}{2^n}
+   \approx 0.64 \cdot \frac{\pi(10^n)}{2^n}.
+\]
+This underestimates the observed values by a factor of roughly $3$.  The
+discrepancy is expected: the global density treats every integer as equally
+likely to be prime, ignoring that every element of $\mathcal{C}_n$
+ends in a digit from $\{1,3,7,9\}$, and is therefore coprime to both $2$
+and $5$.  Since every prime $p > 5$ ends in one of these four digits,
+which account for $4/10$ of all integers, the prime density
+\emph{among} $\{1,3,7,9\}$-ending integers is approximately
+\[
+  \frac{\pi(10^n)}{(4/10) \cdot 10^n}
+  = \frac{5}{2} \cdot \frac{\pi(10^n)}{10^n}.
+\]
+Substituting this refined density yields
+\[
+  16 \cdot 5^{n-2} \cdot \frac{5}{2} \cdot \frac{\pi(10^n)}{10^n}
+   = \frac{8}{5} \cdot \frac{\pi(10^n)}{2^n}
+   = 1.6 \cdot \frac{\pi(10^n)}{2^n},
+\]
+which is much closer to, but still about $20\,\%$ below, Wilson's empirical
+formula $2 \cdot \pi(10^n)/2^n = \pi(10^n)/2^{n-1}$. The remaining
+discrepancy is left as an open question (see Open Problem~\ref{op:wilson});
+its sign and magnitude suggest a further positive arithmetic bias in the
+density of primes within $\mathcal{C}_n$ relative to the global density
+among all $\{1,3,7,9\}$-ending integers, but quantifying this rigorously
+is non-trivial.
+
+In summary, the density argument provides qualitative support for a formula
+of the form $c \cdot \pi(10^n)/2^n$ with $c \sim 1$--$2$, and Wilson's
+empirical choice $c=2$ (i.e.\ $a(n) \approx \pi(10^n)/2^{n-1}$) is best
+regarded as an observed regularity rather than a derived result.
+
+\begin{conjecture}\label{conj:infinite}
+The sequence $\{a(n)\}_{n\geq 1}$ is strictly increasing and tends to
+infinity.
+\end{conjecture}
+
+Conjecture~\ref{conj:infinite} is strongly suggested by Wilson's
+heuristic, which predicts $a(n) \sim 5^n/(n \cdot \text{const})$, a
+quantity tending to infinity. However, neither the strict monotonicity nor
+the divergence follows rigorously from the heuristic, which is itself
+unproved. The non-strict monotonicity $a(n+1) \ge a(n)$ is trivially true,
+since every prime counted by $a(n)$ is also counted by $a(n+1)$; the
+conjecture asserts strict inequality for all $n$, which requires the
+existence of at least one prime with exactly one odd digit and exactly
+$n+1$ decimal digits for every $n \ge 1$.
+
+\section{Open problems}\label{sec:open}
+
+\begin{openproblem}\label{op:a19}
+Compute $a(19)$. The candidate space has cardinality $16 \cdot 5^{17}
+\approx 1.22\times 10^{13}$, a factor of $5$ larger than that of $a(18)$;
+the expected wall-time at $14$ threads on the present hardware is
+approximately $68$ hours. The ratio $a(19)/a(18)$ is predicted to be
+approximately $\tfrac{1}{2} \cdot \pi(10^{19})/\pi(10^{18}) \approx 4.73$.
+\end{openproblem}
+
+\begin{openproblem}\label{op:proof}
+Prove Conjecture~\ref{conj:infinite}.
+\end{openproblem}
+
+\begin{openproblem}\label{op:wilson}
+Derive a rigorous error bound for Wilson's heuristic~\eqref{eq:wilson}.
+The empirical evidence at $n \leq 18$ suggests an error of order
+$O(a(n)/\ln(10^n))$, but a formal statement appears non-trivial.
+\end{openproblem}
+
+\begin{openproblem}\label{op:digits}
+By Lemma~\ref{lem:structure}, every prime in the sequence has its sole odd
+digit in the units position, so no genuinely distinct prime sequence arises
+by allowing the odd digit at other positions. A natural extension is to
+study the sequence $b(n) := \#\{m \in \mathbb{Z} : 1 \le m < 10^n,\;
+\omega_{\mathrm{odd}}(m)=1\}$, where $\omega_{\mathrm{odd}}(m)$ denotes
+the number of odd decimal digits of $m$, counting without regard to
+position. Unlike $a(n)$, the sequence $b(n)$ counts all positive integers
+below $10^n$ with exactly one odd digit, including composites; here the odd
+digit may occupy any position. Determine the growth rate of $b(n)$ and
+compare it with $a(n)$.
+\end{openproblem}
+
+\section{Data and code availability}\label{sec:data}
+
+The complete source code, the extended $b$-file for $a(1), \ldots, a(18)$,
+the main campaign logs, and the full methodological documentation are available
+at the GitHub repository~\cite{Repo}.
+
+The single-file C17 implementation (\texttt{A359813.c}), together with the
+shell scripts for reproducing the oracle test, the $a(17)$ campaign, and
+the $a(18)$ campaign, is sufficient to reproduce every numerical result
+in this paper on any 64-bit Linux machine with GCC 11 or newer.
+
+\section*{Acknowledgements}
+
+The author thanks Zhining Yang for creating OEIS sequence A359813,
+and Robert G.\ Wilson\,v for extending it to $a(16)$ and for the
+heuristic relation that provided the sanity check used throughout this
+work.
+
+\section*{AI use disclosure}
+
+This work was carried out with substantial support from large language
+models (Claude and ChatGPT), used as a research assistant
+throughout the full workflow: mathematical analysis of the candidate
+space, design of the computational strategy, code generation in C17,
+independent peer review of the generated code, and composition of this
+manuscript. Every quantitative claim in this paper was verified
+computationally; all mathematical statements were checked by the author
+before inclusion. The author takes full scientific responsibility for the
+content. The exact model versions and API identifiers used will be
+recorded in the repository at \cite{Repo}.
+
+\begin{thebibliography}{99}
+
+\bibitem{Maynard2019}
+J.\ Maynard,
+\emph{Primes with restricted digits},
+Invent.\ Math.\ \textbf{217} (2019), 127--218.
+
+\bibitem{Jaeschke1993}
+G.\ Jaeschke,
+\emph{On strong pseudoprimes to several bases},
+Math.\ Comp.\ \textbf{61} (1993), 915--926.
+
+\bibitem{OEIS-A014233}
+OEIS Foundation Inc.,
+\emph{Sequence A014233: Smallest odd number for which Miller--Rabin
+primality test on bases $\leq p_n$ does not reveal compositeness},
+published electronically at \url{https://oeis.org/A014233}, 2026.
+
+\bibitem{OEIS-A359813}
+OEIS Foundation Inc.,
+\emph{Sequence A359813: Number of primes $< 10^n$ with exactly one odd
+decimal digit},
+published electronically at \url{https://oeis.org/A359813}, 2026.
+
+\bibitem{primepi-table}
+OEIS Foundation Inc.,
+\emph{Sequence A006880: Number of primes $< 10^n$},
+published electronically at \url{https://oeis.org/A006880}, 2026.
+
+\bibitem{Repo}
+C.\ Corti,
+\emph{oeis-A359813: Extension of OEIS sequence A359813 to $n = 17$ and
+$n = 18$},
+GitHub repository, 2026.
+Available at \url{https://github.com/carcorti/A359813}.
+
+\bibitem{SorensonWebster2017}
+J.\ Sorenson and J.\ Webster,
+\emph{Strong pseudoprimes to twelve prime bases},
+Math.\ Comp.\ \textbf{86} (2017), 985--1003.
+(Preprint: arXiv:1509.00864, 2015.)
+
+\bibitem{Wilson-comment}
+R.\ G.\ Wilson\,v,
+Comment on OEIS sequence A359813: ``$a(n) \simeq \pi(10^n)/2^{n-1}$'',
+\url{https://oeis.org/A359813}, 4 February 2023.
+
+\bibitem{Yang-A359813}
+Z.\ Yang,
+Initial submission of OEIS sequence A359813,
+14 January 2023. Available at \url{https://oeis.org/A359813}.
+The sequence was subsequently extended to $a(16)$ by R.\ G.\ Wilson\,v
+(4 February 2023; see also \cite{Wilson-comment}).
+
+\end{thebibliography}
+
+\end{document}

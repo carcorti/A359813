@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: "If you use this code or the computed terms a(17), a(18) of OEIS A359813, please cite this repository."
+title: "oeis-A359813: Extension of OEIS sequence A359813 to n = 17 and n = 18"
+authors:
+  - family-names: "Corti"
+    given-names: "Carlo"
+abstract: >-
+  C17/OpenMP implementation that extends the OEIS sequence A359813
+  (number of primes < 10^n with exactly one odd decimal digit)
+  with two new terms: a(17) = 40386401580 and a(18) = 190186145230.
+  Uses deterministic Miller-Rabin (12 bases) with Montgomery form,
+  modular sieve prefilter, and OpenMP parallelisation.
+  Results are paper-grade validated: a(17) via two independent
+  `mulmod` implementations (bit-per-bit match) and Python/sympy
+  prefix cross-check; a(18) via Wilson sanity (0.75%) and
+  a(18)/a(17) ratio consistency with the Prime Number Theorem (0.12%).
+keywords:
+  - OEIS
+  - A359813
+  - prime numbers
+  - Miller-Rabin primality test
+  - Montgomery multiplication
+  - OpenMP
+  - computational number theory
+license: MIT
+version: "1.0.0"
+date-released: 2026-04-20

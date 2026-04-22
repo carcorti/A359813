@@ -1,0 +1,26 @@
+# Compiled binaries
+A359813
+A359813_san
+src/A359813
+src/A359813_san
+*.o
+
+# Checkpoint files (transient state, regenerated at each run)
+*.bin
+*.bin.tmp
+
+# Temporary logs produced outside the documented runs
+# (the curated logs under logs/ are NOT ignored because they document
+# the reproducibility of the published results).
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
