@@ -1,6 +1,6 @@
 # OEIS A359813 — Computation of New Terms
 
-This repository contains the source code, data files, logs, and paper associated with the computation of two new terms of [OEIS A359813](https://oeis.org/A359813).
+This repository contains the source code, data files, selected logs, and paper associated with the computation of two new terms of [OEIS A359813](https://oeis.org/A359813).
 
 > **A359813** — Number of primes < 10^n with exactly one odd decimal digit.
 
@@ -23,11 +23,11 @@ A359813/
 ├── CITATION.cff
 ├── src/       # C source code, build files, and run scripts
 ├── data/      # sequence data
-├── logs/      # curated execution and validation logs
+├── logs/      # selected execution and validation logs
 └── paper/     # PDF and LaTeX source of the accompanying paper
 ```
 
-The accompanying paper is available as [`paper/A359813_v7.pdf`](paper/A359813_v7.pdf).
+The accompanying paper is available as [`paper/A359813.pdf`](paper/A359813.pdf) and [`paper/A359813.tex`](paper/A359813.tex).
 
 ## Mathematical structure of the search space
 
@@ -55,10 +55,10 @@ This reduces the search space exponentially relative to the full interval below 
 
 Each candidate is processed through the following pipeline:
 
-1. **Small-prime filtering**
+1. **Small-prime filtering**  
    Modular sieving with primes `p ≤ 47`, using incrementally updated residues.
 
-2. **Primality testing**
+2. **Primality testing**  
    Deterministic Miller–Rabin with 12 bases
    `{2,3,5,7,11,13,17,19,23,29,31,37}`
    for the explored numerical range.
@@ -67,10 +67,10 @@ Each candidate is processed through the following pipeline:
    - Montgomery modular multiplication (primary backend)
    - Independent `__uint128_t` backend (cross-check)
 
-4. **Parallelisation**
+4. **Parallelisation**  
    OpenMP over the 100 three-digit prefixes.
 
-5. **Checkpointing**
+5. **Checkpointing**  
    Binary checkpoints with CRC32 integrity checks, enabling safe resume.
 
 The implementation is written in C17 and uses only libc plus OpenMP.
@@ -85,12 +85,12 @@ Full algorithmic details are documented in the accompanying paper.
 
 ## Performance
 
-| Computation              | Threads |   Wall-time |
-| ------------------------ | ------: | ----------: |
-| Oracle test (`a(1)`…`a(16)`) |      16 |     ~43 min |
-| `a(17)`, Montgomery backend |      16 |  2 h 20 min |
-| `a(17)`, `__uint128_t` backend |      16 |  4 h 12 min |
-| `a(18)`, Montgomery backend |      14 | 12 h 49 min |
+| Computation                          | Threads | Wall-time |
+| ------------------------------------ | ------: | --------: |
+| Oracle test (`a(1)`…`a(16)`)         |      16 |   ~43 min |
+| `a(17)`, Montgomery backend          |      16 |  2 h 20 m |
+| `a(17)`, `__uint128_t` backend       |      16 |  4 h 12 m |
+| `a(18)`, Montgomery backend          |      14 | 12 h 49 m |
 
 Wall-times are hardware-dependent.
 
@@ -119,11 +119,11 @@ Selected prefixes of `a(14)` were cross-checked with a separate Python enumerato
 
 These are consistency indicators, not proofs.
 
-- **Prime number theorem scaling**
+- **Prime number theorem scaling**  
   `a(18)/a(17) ≈ 4.7092`, expected `≈ 4.7150`, deviation `≈ 0.12%`
 
-- **Density heuristic**
-  Agreement with `π(10^n)/2^(n−1)` at about the 1% level
+- **Density heuristic**  
+  Agreement with `π(10^n)/2^(n−1)` at about the 1% level.
 
 ## Reproducibility
 
